@@ -38,6 +38,9 @@ type Params struct {
 	// CrashMean > 0 injects engine crashes: after a uniformly random number
 	// of store appends in [1, CrashMean] the process "dies" and recovers.
 	CrashMean int
+	// CompactProb compacts the event log after each event with this
+	// probability (exercises recovery from snapshots).
+	CompactProb float64
 
 	Queue queue.Config
 }
@@ -146,16 +149,17 @@ type simulator struct {
 	seq    int64
 	wakes  map[time.Time]bool
 
-	active    map[queue.RunID]*activeRun
-	cache     map[cacheKey]cacheEntry
-	hits      int
-	lookups   int
-	ciMinutes float64
-	wasted    float64
-	runs      int
-	crashes   int
-	start     time.Time
-	lastMerge time.Time
+	active      map[queue.RunID]*activeRun
+	cache       map[cacheKey]cacheEntry
+	hits        int
+	lookups     int
+	ciMinutes   float64
+	wasted      float64
+	runs        int
+	crashes     int
+	compactions int
+	start       time.Time
+	lastMerge   time.Time
 }
 
 func (s *simulator) push(e *event) {
@@ -381,6 +385,12 @@ func (s *simulator) loop() error {
 		}
 		if err != nil {
 			return err
+		}
+		if s.p.CompactProb > 0 && s.rng.Float64() < s.p.CompactProb {
+			if err := s.deliver(false, func(e *queue.Engine) error { return e.Compact() }); err != nil {
+				return err
+			}
+			s.compactions++
 		}
 		if t, ok := s.eng.NextWakeup(); ok && !s.wakes[t] {
 			s.wakes[t] = true

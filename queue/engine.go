@@ -180,6 +180,26 @@ func (e *Engine) recover() error {
 			for _, t := range ev.Tests {
 				e.Flaky.RecordFlake(t)
 			}
+		case EvSnapshotFlaky:
+			if ev.FlakyState != nil {
+				e.Flaky.Restore(*ev.FlakyState)
+			}
+		case EvSnapshotPR:
+			if ev.PRState == nil {
+				continue
+			}
+			p := *ev.PRState
+			e.nextSeq = max(e.nextSeq, p.Seq)
+			if p.State.Terminal() {
+				st := p.State
+				p.State = Queued
+				e.prs[p.ID] = &p
+				e.finish(&p, st, p.Reason, p.DoneAt)
+			} else {
+				p.State = Queued
+				e.prs[p.ID] = &p
+			}
+			order = moveToBack(order, p.ID)
 		}
 	}
 	// Reconcile merges that may or may not have happened before a crash.
@@ -918,6 +938,42 @@ func (e *Engine) ejectGroup(l *lane, g *group, reason string, tests []string) er
 	}
 	e.cleanupLanes()
 	return nil
+}
+
+// --------------------------------------------------------------- compaction
+
+// Snapshot returns a minimal event log that recovers to the engine's
+// current durable state: one snapshot_pr per PR (in queue order) and one
+// snapshot_flaky per tracked test. In-flight runs are not part of durable
+// state (they are re-tested after recovery anyway).
+func (e *Engine) Snapshot() []Event {
+	prs := e.PRs()
+	sort.Slice(prs, func(i, j int) bool { return prs[i].Seq < prs[j].Seq })
+	now := e.now()
+	var out []Event
+	for i := range prs {
+		p := prs[i]
+		if !p.State.Terminal() {
+			p.State = Queued
+		}
+		out = append(out, Event{Type: EvSnapshotPR, At: now, PR: p.ID, PRState: &p})
+	}
+	for _, st := range e.Flaky.Stats() {
+		st := st
+		out = append(out, Event{Type: EvSnapshotFlaky, At: now, FlakyState: &st})
+	}
+	return out
+}
+
+// Compact replaces the store's log with Snapshot. It is safe at any point
+// between engine calls: merge_intent and merged are always written within
+// one call, so no merge is ever in doubt here.
+func (e *Engine) Compact() error {
+	c, ok := e.store.(Compacter)
+	if !ok {
+		return errors.New("queue: store does not support compaction")
+	}
+	return c.Compact(e.Snapshot())
 }
 
 // --------------------------------------------------------------- queries

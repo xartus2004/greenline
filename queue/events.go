@@ -4,6 +4,8 @@ import (
 	"errors"
 	"sync"
 	"time"
+
+	"github.com/xartus2004/greenline/flaky"
 )
 
 // Event types written ahead of every externally visible state change.
@@ -15,6 +17,9 @@ const (
 	EvMergeIntent = "merge_intent"
 	EvMerged      = "merged"
 	EvFlake       = "flake"
+	// Compaction writes these in place of the history they summarise.
+	EvSnapshotPR    = "snapshot_pr"
+	EvSnapshotFlaky = "snapshot_flaky"
 )
 
 // Event is one durable state transition. The engine's state is a pure
@@ -35,6 +40,9 @@ type Event struct {
 	Commit  string    `json:"commit,omitempty"`
 	Parent  string    `json:"parent,omitempty"`
 	Items   []Item    `json:"items,omitempty"`
+
+	PRState    *PR         `json:"pr_state,omitempty"`    // EvSnapshotPR
+	FlakyState *flaky.Stat `json:"flaky_state,omitempty"` // EvSnapshotFlaky
 }
 
 // Store is the engine's write-ahead log. Append must be durable before it
@@ -42,6 +50,12 @@ type Event struct {
 type Store interface {
 	Append(ev Event) error
 	Load() ([]Event, error)
+}
+
+// Compacter is implemented by stores that can atomically replace their
+// whole log with a snapshot.
+type Compacter interface {
+	Compact(snapshot []Event) error
 }
 
 // ErrCrashed is returned by CrashStore after its crash point.
@@ -74,6 +88,28 @@ func (m *MemStore) Append(ev Event) error {
 	ev.Seq = int64(len(m.events) + 1)
 	m.events = append(m.events, ev)
 	return nil
+}
+
+// Compact implements Compacter.
+func (m *MemStore) Compact(snap []Event) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.crashed {
+		return ErrCrashed
+	}
+	m.events = nil
+	for i, ev := range snap {
+		ev.Seq = int64(i + 1)
+		m.events = append(m.events, ev)
+	}
+	return nil
+}
+
+// Len returns the number of stored events.
+func (m *MemStore) Len() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.events)
 }
 
 // Load implements Store.

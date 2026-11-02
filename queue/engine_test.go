@@ -436,3 +436,53 @@ func TestDuplicateEnqueueRejected(t *testing.T) {
 		t.Fatal("duplicate enqueue accepted")
 	}
 }
+
+func TestCompactionPreservesState(t *testing.T) {
+	x := newH(t, Config{Depth: 2, FlakyRetries: 1})
+	x.enqueue(1)
+	x.enqueue(2)
+	x.enqueue(3)
+	x.enqueue(4)
+	r := x.liveRun(1)
+	x.result(r, Fail, "flaky")
+	x.pass(1) // flake recorded
+	x.fail(2)
+	x.fail(2) // 2 ejected
+	before := x.store.Len()
+	want := fmt.Sprint(stripRuns(x.e.PRs()))
+	if err := x.e.Compact(); err != nil {
+		t.Fatal(err)
+	}
+	if x.store.Len() >= before {
+		t.Fatalf("log not compacted: %d -> %d", before, x.store.Len())
+	}
+	x.ci.live = map[RunID]Run{}
+	x.boot()
+	if got := fmt.Sprint(stripRuns(x.e.PRs())); got != want {
+		t.Fatalf("after compaction:\n got %s\nwant %s", got, want)
+	}
+	if st := x.e.Flaky.Stats(); len(st) != 2 || st[0].Test != "flaky" || st[0].Flakes != 1 || st[1].Failures != 1 {
+		t.Fatalf("flake stats lost: %+v", st)
+	}
+	// The queue keeps working, in the same order, and enqueue order is
+	// preserved for new PRs.
+	x.enqueue(5)
+	x.pass(3)
+	x.pass(4)
+	x.pass(5)
+	x.expect(map[PRID]State{1: Merged, 2: Ejected, 3: Merged, 4: Merged, 5: Merged})
+	if p, _ := x.e.PR(5); p.Seq <= 4 {
+		t.Fatalf("seq not continued after compaction: %d", p.Seq)
+	}
+}
+
+// stripRuns normalises fields that legitimately differ after recovery.
+func stripRuns(prs []PR) []PR {
+	for i := range prs {
+		prs[i].Runs = 0
+		if !prs[i].State.Terminal() {
+			prs[i].State = Queued
+		}
+	}
+	return prs
+}

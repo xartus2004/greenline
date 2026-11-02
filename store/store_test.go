@@ -40,3 +40,22 @@ func TestAppendLoadReopen(t *testing.T) {
 }
 
 var _ queue.Store = (*SQLite)(nil)
+
+func TestCompact(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "q.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for i := 0; i < 10; i++ {
+		s.Append(queue.Event{Type: queue.EvEnqueue, PR: queue.PRID(i)})
+	}
+	snap := []queue.Event{{Type: queue.EvSnapshotPR, PR: 3, PRState: &queue.PR{ID: 3, State: queue.Merged, Seq: 9}}}
+	if err := s.Compact(snap); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.Load()
+	if len(got) != 1 || got[0].PRState == nil || got[0].PRState.Seq != 9 {
+		t.Fatalf("%+v", got)
+	}
+}

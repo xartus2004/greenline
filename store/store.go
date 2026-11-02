@@ -54,6 +54,31 @@ func (s *SQLite) Append(ev queue.Event) error {
 	return err
 }
 
+// Compact implements queue.Compacter: the whole log is replaced by snap in
+// one transaction, so a crash leaves either the old log or the new one.
+func (s *SQLite) Compact(snap []queue.Event) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM events`); err != nil {
+		return err
+	}
+	for _, ev := range snap {
+		b, err := json.Marshal(ev)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`INSERT INTO events(type, at, pr, data) VALUES (?, ?, ?, ?)`, ev.Type, ev.At.UnixNano(), int64(ev.PR), b); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 // Load implements queue.Store.
 func (s *SQLite) Load() ([]queue.Event, error) {
 	s.mu.Lock()
@@ -91,3 +116,5 @@ func (s *SQLite) Count() (int, error) {
 
 // Close closes the database.
 func (s *SQLite) Close() error { return s.db.Close() }
+
+var _ queue.Compacter = (*SQLite)(nil)

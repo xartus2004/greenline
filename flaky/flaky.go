@@ -105,3 +105,15 @@ func (t *Tracker) Stats() []Stat {
 	sort.Slice(out, func(i, j int) bool { return out[i].Test < out[j].Test })
 	return out
 }
+
+// Restore installs a previously exported stat (used when replaying a
+// compacted log).
+func (t *Tracker) Restore(s Stat) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	c := s
+	if t.stats == nil {
+		t.stats = map[string]*Stat{}
+	}
+	t.stats[s.Test] = &c
+}

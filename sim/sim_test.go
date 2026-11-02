@@ -80,6 +80,9 @@ func randomize(p Params, seed int64) Params {
 		p.CrashMean = 1 + int(f(40)*40)
 	}
 	p.Cache = f(2) < 0.5
+	if f(10) < 0.5 {
+		p.CompactProb = 0.05 + 0.3*f(100)
+	}
 	return p
 }
 

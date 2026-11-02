@@ -46,7 +46,10 @@ type Config struct {
 	CacheBytes    int64
 	ActionTimeout time.Duration
 	PollMain      time.Duration // how often to check main for external pushes (default 2s)
-	Log           *slog.Logger
+	// CompactAfter compacts the event log once it holds more than this
+	// many events (default 5000; negative disables).
+	CompactAfter int
+	Log          *slog.Logger
 	// OnTransition is called (from the engine goroutine) whenever a PR
 	// changes state.
 	OnTransition func(Transition)
@@ -106,6 +109,9 @@ func New(cfg Config) (*Server, error) {
 	if cfg.CacheBytes <= 0 {
 		cfg.CacheBytes = 5 << 30
 	}
+	if cfg.CompactAfter == 0 {
+		cfg.CompactAfter = 5000
+	}
 	if cfg.PollMain <= 0 {
 		cfg.PollMain = 2 * time.Second
 	}
@@ -159,6 +165,7 @@ func (s *Server) Run(ctx context.Context) error {
 	defer poll.Stop()
 	timer := time.NewTimer(time.Hour)
 	defer timer.Stop()
+	steps := 0
 	for {
 		if t, ok := s.eng.NextWakeup(); ok {
 			timer.Reset(max(time.Until(t), time.Millisecond))
@@ -180,6 +187,14 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 		if err != nil {
 			return fmt.Errorf("engine: %w", err)
+		}
+		if steps++; s.cfg.CompactAfter > 0 && steps%256 == 0 {
+			if n, err := s.store.Count(); err == nil && n > s.cfg.CompactAfter {
+				if err := s.eng.Compact(); err != nil {
+					return fmt.Errorf("compact: %w", err)
+				}
+				s.log.Info("compacted event log", "events_before", n)
+			}
 		}
 		s.snapshot()
 	}
