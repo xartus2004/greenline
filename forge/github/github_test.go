@@ -210,3 +210,13 @@ func FuzzVerify(f *testing.F) {
 		}
 	})
 }
+
+func TestGitAuthEnvKeepsTokenOutOfArgv(t *testing.T) {
+	env := GitAuthEnv("tok123")
+	if len(env) != 3 || !strings.HasPrefix(env[2], "GIT_CONFIG_VALUE_0=Authorization: Basic ") {
+		t.Fatalf("%v", env)
+	}
+	if GitAuthEnv("") != nil {
+		t.Fatal("empty token should add no config")
+	}
+}

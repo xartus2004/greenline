@@ -27,6 +27,7 @@ import (
 	"github.com/xartus2004/greenline/build"
 	"github.com/xartus2004/greenline/cas"
 	"github.com/xartus2004/greenline/flaky"
+	"github.com/xartus2004/greenline/forge/github"
 	"github.com/xartus2004/greenline/forge/localgit"
 	"github.com/xartus2004/greenline/httpcache"
 	"github.com/xartus2004/greenline/metrics"
@@ -39,8 +40,16 @@ import (
 
 // Config configures a server.
 type Config struct {
-	StateDir      string // queue.db and cache/ live here
-	Repo          *localgit.Repo
+	StateDir string         // queue.db and cache/ live here
+	Repo     *localgit.Repo // where candidate commits are built (and the forge, unless Forge is set)
+	// Forge overrides Repo as the queue's forge (e.g. a GitHub mirror).
+	Forge queue.Forge
+	// Fetcher, if set, is used to bring PR heads and main into Repo before
+	// they are inspected (GitHub mode).
+	Fetcher Fetcher
+	// WebhookSecret enables POST /webhook (GitHub deliveries).
+	WebhookSecret []byte
+	WebhookLabel  string
 	Queue         queue.Config
 	Jobs          int
 	CacheBytes    int64
@@ -53,6 +62,12 @@ type Config struct {
 	// OnTransition is called (from the engine goroutine) whenever a PR
 	// changes state.
 	OnTransition func(Transition)
+}
+
+// Fetcher brings remote refs into the local repo.
+type Fetcher interface {
+	FetchPR(ctx context.Context, id queue.PRID) error
+	FetchMain(ctx context.Context) error
 }
 
 // Transition is a PR state change.
@@ -135,7 +150,11 @@ func New(cfg Config) (*Server, error) {
 	s.runner = &runner.Runner{Repo: cfg.Repo, CAS: c, AC: ac, Results: s.results, Jobs: cfg.Jobs,
 		ActionTimeout: cfg.ActionTimeout, Log: cfg.Log, OnReport: s.onReport}
 	s.cacheSrv = &httpcache.Server{CAS: c, AC: ac, Log: cfg.Log}
-	eng, err := queue.New(cfg.Queue, queue.Deps{CI: s.runner, Forge: cfg.Repo, Store: st, Clock: realClock{}, Log: cfg.Log})
+	var fg queue.Forge = cfg.Repo
+	if cfg.Forge != nil {
+		fg = cfg.Forge
+	}
+	eng, err := queue.New(cfg.Queue, queue.Deps{CI: s.runner, Forge: fg, Store: st, Clock: realClock{}, Log: cfg.Log})
 	if err != nil {
 		s.runner.Close()
 		st.Close()
@@ -275,6 +294,27 @@ func (s *Server) Update(ctx context.Context, id queue.PRID, branch string) error
 	return s.Enqueue(ctx, id, branch)
 }
 
+// EnqueueSHA implements github.Queue: fetch the PR into the local repo and
+// enqueue it.
+func (s *Server) EnqueueSHA(ctx context.Context, id queue.PRID, head string) error {
+	if s.cfg.Fetcher != nil {
+		if err := s.cfg.Fetcher.FetchPR(ctx, id); err != nil {
+			return err
+		}
+	}
+	return s.Enqueue(ctx, id, fmt.Sprintf("pr/%d", id))
+}
+
+// MainMoved implements github.Queue.
+func (s *Server) MainMoved(ctx context.Context) error {
+	if s.cfg.Fetcher != nil {
+		if err := s.cfg.Fetcher.FetchMain(ctx); err != nil {
+			return err
+		}
+	}
+	return s.do(ctx, func(e *queue.Engine) error { return e.OnMainMoved() })
+}
+
 // Remove withdraws a PR.
 func (s *Server) Remove(ctx context.Context, id queue.PRID) error {
 	return s.do(ctx, func(e *queue.Engine) error { return e.Remove(id) })
@@ -333,6 +373,9 @@ func (s *Server) Handler() http.Handler {
 	reg.MustRegister(metrics.New(s.metricsSnapshot))
 	mux.Handle("GET /metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
 	mux.Handle("/cache/", s.cacheSrv)
+	if len(s.cfg.WebhookSecret) > 0 {
+		mux.Handle("POST /webhook", &github.Webhook{Secret: s.cfg.WebhookSecret, Label: s.cfg.WebhookLabel, Queue: s})
+	}
 	mux.HandleFunc("POST /api/prs", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			ID     int64  `json:"id"`
