@@ -6,7 +6,7 @@ Resume with: "read PROGRESS.md and continue".
 
 | Probe | Result |
 |---|---|
-| `go version` | go1.24.7 installed; toolchain auto-switch available (go1.26.0 downloaded) |
+| `go version` | go1.24.7 installed; go.mod now needs 1.26, which the toolchain auto-switch downloads (go1.26.0) |
 | `git --version` | 2.43.0 |
 | `bazel` / `bazelisk` | **not installed**; releases.bazel.build and github.com release downloads are blocked by the network policy (HTTP 403), so real-Bazel tests cannot run here. They are gated behind the `bazel` build tag. |
 | CPUs / RAM | 4 vCPU, 15 GiB |
@@ -19,7 +19,9 @@ Resume with: "read PROGRESS.md and continue".
 - [x] **M2** — queue engine (one mechanism covers serial, batch+bisect, Zuul-style speculation with culprit skipping, lanes), write-ahead event log (`queue.MemStore`, `store.SQLite`), crash recovery that reconciles in-doubt merges with the forge, flaky retry + quarantine, infra retry with backoff, timeouts, update/remove/external push. Table-driven lifecycle tests in `queue/engine_test.go`; property test in `sim/sim_test.go` (7 configs × 1,000 seeds, `-long` = 20,000) with random crash points.
 - [x] **M3** — speculation + lanes (built in M2's engine), `greenline sim` grid with a no-queue baseline and cache on/off, README results table, docs/results.md (full grid). `go test ./sim -long` (7×20,000 seeds) passes in 46 s.
 - [x] **M4** — `forge/localgit` (deterministic merge commits via merge-tree/commit-tree, CAS `update-ref`), `runner` (real CI through the cache, process-group cancel, `VerifyMain`), `server` (engine goroutine, JSON API, HTML status page, Prometheus, HTTP cache), `greenline serve` and `greenline demo` (20 PRs; main verified green from scratch), kill -9 integration test (`-tags integration`, passes with 9–11 SIGKILLs per run).
-- [~] **M5** — done: `reapi` gRPC cache (tested with a Go client over bufconn), `forge/github` (REST forge, check runs, HMAC webhooks; tested against httptest fakes; signature check fuzzed), HTML status page (`GET /`), Prometheus `/metrics`, `docs/architecture.md`, `greenline cache -grpc` / `serve -grpc`. **Written but not run here:** `reapi/bazel_test.go` (`-tags bazel`, needs Bazel; downloads blocked) and the Dockerfile (Docker Hub returned 429; no local base images).
+- [x] **M5** — `reapi` gRPC cache (tested over bufconn **and with Google's official `remote-apis-sdks` Go client**), `forge/github` (REST forge, check runs, HMAC webhooks, fuzzed signature check) **wired into `serve -github`** through a local mirror (end-to-end test against a fake GitHub API backed by a real bare repo), HTML status page, Prometheus `/metrics`, `docs/architecture.md`, Dockerfile (**built here**; the full demo passes inside the image).
+- [x] **After M5** — event-log compaction (`Engine.Compact`, SQLite transaction; the server compacts once the log passes 5,000 events; property test compacts at random points).
+- [ ] **Only remaining item:** `reapi/bazel_test.go` (`-tags bazel`) against a real Bazel binary. It is not run here because Bazel downloads are blocked.
 
 ## Measured so far (this container, 4 vCPU)
 
@@ -37,14 +39,16 @@ p = 0.10, 12 PRs/h, cache on: serial p95 TTM 8.7h → speculative 36m, lanes+spe
 
 ## Next
 
-1. Run `go test -tags bazel ./reapi -v` somewhere Bazel is installed, then fix whatever it finds. The likely suspects are digest-function handling and ByteStream resource names with compressors.
-2. `docker build .` on a machine that can pull `golang:1.24-bookworm` and `debian:bookworm-slim`.
-3. Wire `forge/github` into `serve`: keep a local mirror (localgit) for building candidate commits, push them to `refs/heads/greenline/<sha>`, then `Advance` via the API, and report check runs from `OnTransition`.
-4. Event-log compaction (a snapshot plus truncation).
-5. Real runner: build only the affected targets of the *last* group (relative to its parent) rather than of the whole chain.
+1. Run `go test -tags bazel ./reapi -v` on a machine with Bazel, and fix whatever it finds.
+2. Try `serve -github` on a real repository (a token with contents:write and checks:write, plus a webhook for pull_request and push).
+3. Optional: in the simulator, model in-flight action dedup (remote execution) to quantify how much more speculation could save.
+
+## Environment notes for reproducing here
+
+- Go modules need Go 1.26 (raised by grpc / remote-apis-sdks); the toolchain auto-downloads.
+- Docker: start `dockerd` manually. Base-image pulls work, but `apt-get` is blocked, so the runtime image uses `buildpack-deps:bookworm-scm`, which already has git. The Go proxy needs the session's TLS CA: `docker build --secret id=extra_ca,src=/root/.ccr/ca-bundle.crt -t greenline .`
 
 ## Known gaps
 
 - Bazel compatibility (HTTP and gRPC) is implemented against the documented protocols but **not verified with a real Bazel** here (no Bazel binary available; npm/bazelisk route also not permitted).
-- Dockerfile unverified (Docker Hub rate limit).
 - See README "Limitations".

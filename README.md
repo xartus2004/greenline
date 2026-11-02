@@ -16,13 +16,14 @@ The cache speaks Bazel's HTTP remote-cache protocol (`/ac/<sha256>`,
 `/cas/<sha256>`). greenline also ships a small hermetic build tool
 (`BUILD.yaml`), so the whole thing works without Bazel.
 
-> **Status:** M1–M4 are done and tested. That covers the cache, build tool,
-> queue engine, crash recovery, simulator, the real-git end-to-end demo and the
-> kill -9 test. M5 is partly verified. The REAPI gRPC cache and the GitHub
-> adapter are built and tested, against a Go gRPC client and against `httptest`
-> fakes. The real-Bazel test and the Docker image are written but **were not
-> run**, because this environment can't download Bazel or pull base images. See
-> [PROGRESS.md](PROGRESS.md) and [docs/architecture.md](docs/architecture.md).
+> **Status:** M1–M5 are done and tested, with one exception: a run against a
+> real Bazel binary. That test is written (`-tags bazel`) but has not been run,
+> because this environment can't download Bazel. The REAPI gRPC cache *is*
+> tested against Google's official REAPI Go client SDK (`remote-apis-sdks`).
+> The Docker image builds, and the full demo passes inside it. GitHub mode
+> (`serve -github`) is tested end to end against a fake GitHub API backed by a
+> real git repository. See [PROGRESS.md](PROGRESS.md) and
+> [docs/architecture.md](docs/architecture.md).
 
 ## The invariant
 
@@ -93,7 +94,7 @@ terminal state and that `main`'s contents match the PR states.
 | `metrics` | Prometheus collector: queue depth, lanes, runs started and cancelled, merges, ejections by reason, flakes, CAS hits, misses, bytes, evictions and corrupt blobs, build actions executed vs cached, and a time-to-merge histogram. |
 | `demo` | The 20-PR scenario and the kill -9 integration test. |
 | `reapi` | REAPI v2 gRPC cache: Capabilities, ContentAddressableStorage (FindMissingBlobs, BatchUpdateBlobs, BatchReadBlobs), ActionCache, and ByteStream Read, Write and QueryWriteStatus. It shares one action-cache store with `httpcache`, because both hold serialized `ActionResult` protos. A `GetActionResult` whose outputs were evicted returns NotFound. Remote execution is not implemented. |
-| `forge/github` | REST `Forge`: `Advance` checks for a single parent, then does a fast-forward-only ref update, which acts as a CAS. Also check runs, and a webhook handler with constant-time `X-Hub-Signature-256` verification (fuzzed) for label-driven enqueue, synchronize, unlabel, close and push-to-main. Tested against an `httptest` fake. The token comes only from `GITHUB_TOKEN` and never appears in errors. |
+| `forge/github` | `Mirrored` (used by `serve -github`): candidate commits are built in a local bare mirror and pushed to `refs/heads/greenline/<sha>`, then `main` is moved through the API. Git credentials go through `GIT_CONFIG_*` env vars, never argv. Underneath that, REST `Forge`: `Advance` checks for a single parent, then does a fast-forward-only ref update, which acts as a CAS. Also check runs, and a webhook handler with constant-time `X-Hub-Signature-256` verification (fuzzed) for label-driven enqueue, synchronize, unlabel, close and push-to-main. Tested against an `httptest` fake. The token comes only from `GITHUB_TOKEN` and never appears in errors. |
 
 ### Strategies (one mechanism)
 
@@ -263,7 +264,7 @@ What the numbers say:
 ## Cache and build tool (measured)
 
 Measured on the development container: 4 vCPU Intel Xeon @ 2.80GHz, local
-disk, Go 1.24.
+disk, Go 1.26.
 
 ```bash
 go test ./cas -run x -bench . -benchtime 2s
@@ -271,12 +272,12 @@ go test ./cas -run x -bench . -benchtime 2s
 
 | benchmark | throughput | latency |
 |---|---:|---:|
-| put 4 KiB (verify + temp file + rename) | 46 MB/s | 89 µs |
-| get 4 KiB (read + sha256 verify) | 169 MB/s | 24 µs |
-| get 4 KiB, 4 parallel readers | 438 MB/s | 9.4 µs |
-| put 1 MiB | 111 MB/s | 9.4 ms |
-| get 1 MiB | 247 MB/s | 4.3 ms |
-| get 1 MiB, 4 parallel readers | 645 MB/s | 1.6 ms |
+| put 4 KiB (verify + temp file + rename) | 45 MB/s | 91 µs |
+| get 4 KiB (read + sha256 verify) | 168 MB/s | 24 µs |
+| get 4 KiB, 4 parallel readers | 470 MB/s | 8.7 µs |
+| put 1 MiB | 117 MB/s | 9.0 ms |
+| get 1 MiB | 246 MB/s | 4.3 ms |
+| get 1 MiB, 4 parallel readers | 584 MB/s | 1.8 ms |
 
 `examples/mono` is a 15-target workspace: 5 libraries and services, a code
 generator, an app bundle, 7 tests and a docs target, with a dependency chain
@@ -316,6 +317,10 @@ go run ./cmd/greenline serve -repo /tmp/r.git -init-from examples/mono -addr :80
 #   POST /api/prs {"id":1,"branch":"pr/1"} · GET / (status page) · GET /metrics · /cache/
 #   bazel build --remote_cache=http://localhost:8080/cache   (or grpc://localhost:9093)
 go test -tags bazel ./reapi -v            # needs bazel on PATH (not run here)
+docker build -t greenline . && docker run --rm greenline demo -src /src/examples/mono
+GITHUB_TOKEN=… GREENLINE_WEBHOOK_SECRET=… go run ./cmd/greenline serve \
+    -github owner/repo -repo /var/lib/greenline/mirror.git -addr :8080
+#   point a GitHub webhook (pull_request, push) at /webhook; label PRs "merge-queue"
 ```
 
 ## Limitations
@@ -329,16 +334,24 @@ go test -tags bazel ./reapi -v            # needs bazel on PATH (not run here)
   would without remote execution's in-flight deduplication.
 - **Compatibility with a real Bazel client is untested.** Bazel could not be
   downloaded in the development environment (the network policy blocks
-  releases.bazel.build and GitHub release assets). `reapi/bazel_test.go`
-  (`-tags bazel`) builds a two-genrule workspace twice against each front end
-  and asserts that the second build is fully remote-cached. It has not been
-  run. The HTTP front end stores AC values opaquely. The gRPC front end decodes
-  `ActionResult` to check that outputs are present. Instance names are ignored,
-  and compressed blobs are rejected.
-- The Dockerfile has not been built: Docker Hub returned 429 to this container.
-- The GitHub adapter has only been exercised against a fake. Wiring it into
-  `serve` (a local mirror that builds candidate commits and pushes them before
-  `Advance`) is not done.
+  releases.bazel.build and GitHub release assets).
+  - `reapi/bazel_test.go` (`-tags bazel`) builds a two-genrule workspace twice
+    against each front end and asserts that the second build is fully
+    remote-cached. It has not been run.
+  - What *is* tested: `reapi/sdk_test.go` drives the gRPC server with Google's
+    official REAPI Go client SDK (`remote-apis-sdks`). That covers
+    GetCapabilities, FindMissingBlobs, BatchUpdateBlobs, BatchReadBlobs,
+    ByteStream Write and Read of a 6 MiB blob, and the ActionCache. A gRPC
+    interceptor asserts that each of those RPCs was called.
+  - The HTTP front end stores AC values opaquely. The gRPC front end decodes
+    `ActionResult` to check that outputs are present. Instance names are
+    ignored, and compressed blobs are rejected.
+- **GitHub mode has only been run against a fake** GitHub API, backed by a real
+  bare repo that enforces fast-forward-only updates. It has not been run
+  against github.com. Candidate commits are pushed to `refs/heads/greenline/*`,
+  so the token needs `contents: write` and `checks: write`. Branch protection
+  that requires status checks on `main` would reject the queue's
+  fast-forward unless the queue's checks are the required ones.
 - Quarantine treats failures of quarantined tests as passes. If a real break
   shows up only in a quarantined test, it would get through. This trade-off is
   standard, and quarantined failures are counted (`quarantined_ignored`).
@@ -346,10 +359,14 @@ go test -tags bazel ./reapi -v            # needs bazel on PATH (not run here)
   edge would put two interacting PRs in different lanes. The invariant still
   holds in that case, because every merge is re-verified on the exact `main`,
   but the extra parallelism would be lost to re-tests.
-- The event log is never compacted.
+- The event log is compacted by snapshot: once it passes 5,000 events,
+  `serve` replaces it with one record per PR plus flake stats. Merge history
+  is in git, not in the log.
 - The real runner builds the affected targets of the whole speculative chain
   relative to its base, so a run for `#1+#2+#3` also rebuilds `#1`'s targets.
-  The cache usually makes those rebuilds hits.
+  This is deliberate: each run fully tests the commit it reports, so the
+  invariant does not depend on a different run having passed. The cache makes
+  those rebuilds hits.
 - With one flaky retry, a test that fails 35% of the time still ejects a good
   PR about 12% of the time until it has flaked enough times to be quarantined.
   The demo sometimes shows this with #12.
