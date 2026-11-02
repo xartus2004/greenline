@@ -12,20 +12,20 @@ import (
 
 // Row aggregates one (strategy, scenario) cell over several seeds.
 type Row struct {
-	Strategy      string
-	FailProb      float64
-	Rate          float64
-	Cache         bool
-	Seeds         int
-	Merged        int
-	Throughput    float64 // merged/hour, mean over seeds
-	P50, P95      time.Duration
-	CIPerMerged   float64
-	WastedPct     float64 // cancelled CI minutes / all CI minutes
-	CacheHit      float64
-	EjectedGood   int
-	Breakages     int
-	Violations    int
+	Strategy    string
+	FailProb    float64
+	Rate        float64
+	Cache       bool
+	Seeds       int
+	Merged      int
+	Throughput  float64 // merged/hour, mean over seeds
+	P50, P95    time.Duration
+	CIPerMerged float64
+	WastedPct   float64 // cancelled CI minutes / all CI minutes
+	CacheHit    float64
+	EjectedGood int
+	Breakages   int
+	Violations  int
 }
 
 // Grid runs every strategy over the given failure rates and arrival rates.
