@@ -18,7 +18,7 @@ Resume with: "read PROGRESS.md and continue".
 - [x] **M1** — cas (disk LRU, atomic writes, integrity check, fuzzed digest parsing), actioncache, httpcache (Bazel HTTP protocol server + client), build tool (BUILD.yaml, sandboxed actions, process-group kill, timeouts), affected-target analysis, `examples/mono` (15 targets), `greenline build` / `greenline cache`.
 - [x] **M2** — queue engine (one mechanism covers serial, batch+bisect, Zuul-style speculation with culprit skipping, lanes), write-ahead event log (`queue.MemStore`, `store.SQLite`), crash recovery that reconciles in-doubt merges with the forge, flaky retry + quarantine, infra retry with backoff, timeouts, update/remove/external push. Table-driven lifecycle tests in `queue/engine_test.go`; property test in `sim/sim_test.go` (7 configs × 1,000 seeds, `-long` = 20,000) with random crash points.
 - [x] **M3** — speculation + lanes (built in M2's engine), `greenline sim` grid with a no-queue baseline and cache on/off, README results table, docs/results.md (full grid). `go test ./sim -long` (7×20,000 seeds) passes in 46 s.
-- [ ] **M4** — localgit forge, runner, `greenline demo`, kill -9 integration test.
+- [x] **M4** — `forge/localgit` (deterministic merge commits via merge-tree/commit-tree, CAS `update-ref`), `runner` (real CI through the cache, process-group cancel, `VerifyMain`), `server` (engine goroutine, JSON API, HTML status page, Prometheus, HTTP cache), `greenline serve` and `greenline demo` (20 PRs; main verified green from scratch), kill -9 integration test (`-tags integration`, passes with 9–11 SIGKILLs per run).
 - [ ] **M5** — REAPI gRPC, GitHub forge (fakes), status page, Dockerfile, docs.
 
 ## Measured so far (this container, 4 vCPU)
@@ -35,12 +35,11 @@ Resume with: "read PROGRESS.md and continue".
 
 p = 0.10, 12 PRs/h, cache on: serial p95 TTM 8.7h → speculative 36m, lanes+speculative 32m (≈16× lower); 0 main breakages for every queue strategy vs 2 for no queue. Speculative CI/merged PR: 9.8 min with cache vs 22.5 without (serial 6.7). Cache hit ratio of target actions under speculation: 47%.
 
-## Next (M4)
+## Next (M5)
 
-1. `forge/localgit`: bare repo + `git` CLI; deterministic commits (fixed author/committer dates) so `apply(parent, group)` is reproducible; `Advance` = `git update-ref refs/heads/main new old` after checking `new^ == old`.
-2. `runner`: worktree per run, apply groups with `git merge --no-ff` (fixed dates), `affected` vs base, `build` the affected targets, cancel = kill process group.
-3. `cmd/greenline serve` + `demo` (20 PR branches: broken, pairwise-conflicting, flaky).
-4. Integration test (`//go:build integration`): run `serve` as a subprocess, `kill -9` at random points, restart, check every main commit with a from-scratch rebuild.
+1. `reapi/`: gRPC Capabilities, ContentAddressableStorage (FindMissingBlobs, BatchUpdate/BatchRead), ActionCache, ByteStream over the same `cas`/`actioncache` stores, using `github.com/bazelbuild/remote-apis` protos (available through the Go proxy). Test with a Go gRPC client; real Bazel test behind `//go:build bazel` (Bazel not downloadable here).
+2. `forge/github`: webhook handler (HMAC `X-Hub-Signature-256`), Checks API + merge via a fake server in tests; token only from `GITHUB_TOKEN`.
+3. Dockerfile, architecture doc.
 
 ## Known gaps
 

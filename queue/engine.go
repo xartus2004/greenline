@@ -382,7 +382,7 @@ func (e *Engine) OnResult(res Result) error {
 		if len(gating) == 0 {
 			gating = []string{"<unknown>"}
 		}
-		if r.spec.Attempt < e.cfg.FlakyRetries {
+		if r.spec.Attempt < e.cfg.FlakyRetries && !(len(gating) == 1 && gating[0] == MergeConflictTest) {
 			// Retry on identical inputs before believing the failure.
 			e.stats.Retries++
 			r.status = cancelled
@@ -880,6 +880,9 @@ func (e *Engine) definitiveFailure(l *lane, g *group) error {
 	reason := ReasonTestFailed
 	if len(tests) == 1 && tests[0] == "<timeout>" {
 		reason = ReasonTimeout
+	}
+	if len(tests) == 1 && tests[0] == MergeConflictTest {
+		reason = ReasonUnmergeable
 	}
 	if len(g.prs) == 1 {
 		return e.ejectGroup(l, g, reason, tests)

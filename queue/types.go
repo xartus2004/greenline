@@ -52,6 +52,10 @@ const (
 	ReasonUnmergeable = "unmergeable"
 )
 
+// MergeConflictTest is the pseudo-test CI reports when a group does not
+// merge cleanly. It is never retried and ejects with ReasonUnmergeable.
+const MergeConflictTest = "<merge-conflict>"
+
 // PR is a pull request in the queue.
 type PR struct {
 	ID      PRID     `json:"id"`

@@ -16,9 +16,9 @@ The cache speaks Bazel's HTTP remote-cache protocol (`/ac/<sha256>`,
 `/cas/<sha256>`). greenline also ships a small hermetic build tool
 (`BUILD.yaml`), so the whole thing works without Bazel.
 
-> **Status:** M1–M3 are done (cache, build tool, queue engine, crash recovery,
-> simulator). M4 (real git end-to-end demo, kill -9 test) and M5 (REAPI gRPC,
-> GitHub adapter) are not done yet. See [PROGRESS.md](PROGRESS.md).
+> **Status:** M1–M4 are done: cache, build tool, queue engine, crash recovery,
+> simulator, real-git end-to-end demo and the kill -9 test. M5 (REAPI gRPC,
+> GitHub adapter, Dockerfile) is not done yet. See [PROGRESS.md](PROGRESS.md).
 
 ## The invariant
 
@@ -83,6 +83,11 @@ terminal state and that `main`'s contents match the PR states.
 | `flaky` | Flake tracking. Fail followed by pass on identical inputs counts as a flake. A test is quarantined after N flakes (default 2). |
 | `store` | SQLite event log (`modernc.org/sqlite`, no cgo). |
 | `sim` | Discrete-event simulator with ground truth, a fake CI with a per-target cache model, and the invariant checker. |
+| `forge/localgit` | A bare git repo used as the forge. Candidate commits are built without a worktree (`git merge-tree --write-tree`, then `git commit-tree`) with a fixed identity and date, so they are deterministic. `Advance` checks that the new commit's only parent is the old `main`, then runs `git update-ref main new old`. |
+| `runner` | Real CI. It builds the speculative commit, exports its tree, computes the affected targets from the git diff, and builds and tests them through the cache. Cancelling a run kills the build's process groups. `VerifyMain` rebuilds every `main` commit from scratch. |
+| `server` | One goroutine owns the engine and serialises API calls, CI results, timers and `main` polling. Also serves a JSON API, an HTML status page, Prometheus `/metrics`, and the HTTP cache under `/cache/`. |
+| `metrics` | Prometheus collector: queue depth, lanes, runs started and cancelled, merges, ejections by reason, flakes, CAS hits, misses, bytes, evictions and corrupt blobs, build actions executed vs cached, and a time-to-merge histogram. |
+| `demo` | The 20-PR scenario and the kill -9 integration test. |
 
 ### Strategies (one mechanism)
 
@@ -115,6 +120,60 @@ persisted, so a lost result means a re-test, never a merge.** Unit tests cover
 a crash between `Advance` and `merged` and a crash before `Advance`. The
 property test crashes at random write points, including during recovery
 itself.
+
+## End-to-end demo (measured)
+
+```bash
+go run ./cmd/greenline demo
+```
+
+This creates a bare git repo from `examples/mono`, pushes 20 PR branches and
+runs the real queue (lanes+speculative) with real shell builds through the
+cache. It prints a timeline and then **rebuilds every commit on `main` from
+scratch with no cache reads** to check that each one is green. The 20 PRs
+include:
+
+- 3 PRs that are broken on their own (#7, #8, #19);
+- a pair that each pass alone but break `worker_test` together (#9, #10:
+  both add a `deploy` job);
+- a textual git conflict (#11 against #1);
+- a deliberately flaky test (#12, fails about 35% of runs);
+- a broken PR that gets a fix pushed while it is queued (#15);
+- 12 good PRs, some touching shared libraries.
+
+From one run ([full transcript](docs/demo.md)):
+
+```
+#7   EJECTED   api: drop /status (breaks api_test)          [broken]   test_failed //app:app_test //services/api:api_test
+#9   MERGED    worker: add deploy job (a)                   [pair]
+#10  EJECTED   worker: add deploy job (b)                   [pair]     test_failed //services/worker:worker_test
+#11  EJECTED   docs: reword tagline (conflicts with #1)     [conflict] unmergeable <merge-conflict>
+#15  MERGED    worker: duplicate job (fixed while queued)   [fixed]    runs=2
+14/20 merged in 14 commits in 11.1s; 56 runs started, 11 cancelled, 15 stale results discarded
+build actions: 138 executed, 293 served from cache (68% hit)
+main is green at all 15 commits (flaky targets retried up to 6 times)
+```
+
+### kill -9 test
+
+```bash
+go test -tags integration ./demo -run Kill9 -v
+```
+
+The test runs `greenline serve` as a subprocess on the same 20 PRs. Every
+150–1150 ms it **SIGKILLs** the server, then restarts it from its SQLite log,
+and keeps going until the queue drains (up to 15 kills). It then checks that:
+
+- every `main` commit is a single-parent child of the previous one, and each
+  has a `merge_intent` in the log;
+- every PR ended in a terminal state, and merged PRs appear on `main` exactly
+  once while all others are absent;
+- no broken PR merged;
+- every `main` commit is green when rebuilt from scratch.
+
+It passed on 5 consecutive runs with 9–11 SIGKILLs each. An earlier version
+of the test caught a real bug: a re-delivered enqueue for an already-ejected
+PR re-queued it. Enqueue is now a no-op when the PR's head is unchanged.
 
 ## Results (simulated)
 
@@ -245,6 +304,10 @@ go test -race ./...                      # unit + 7x1000-seed property test (~25
 go test ./sim -run TestInvariantProperty -long   # 7x20000 seeds (~45 s)
 go run ./cmd/greenline sim -cache both   # full results grid (docs/results.md)
 go test ./cas -run x -bench .            # CAS benchmarks
+go run ./cmd/greenline demo              # 20-PR end-to-end demo + from-scratch verification
+go test -tags integration ./demo -v      # kill -9 crash-recovery test (~40 s)
+go run ./cmd/greenline serve -repo /tmp/r.git -init-from examples/mono -addr :8080
+#   POST /api/prs {"id":1,"branch":"pr/1"} · GET / (status page) · GET /metrics · /cache/
 ```
 
 ## Limitations
@@ -269,6 +332,12 @@ go test ./cas -run x -bench .            # CAS benchmarks
   holds in that case, because every merge is re-verified on the exact `main`,
   but the extra parallelism would be lost to re-tests.
 - The event log is never compacted.
+- The real runner builds the affected targets of the whole speculative chain
+  relative to its base, so a run for `#1+#2+#3` also rebuilds `#1`'s targets.
+  The cache usually makes those rebuilds hits.
+- With one flaky retry, a test that fails 35% of the time still ejects a good
+  PR about 12% of the time until it has flaked enough times to be quarantined.
+  The demo sometimes shows this with #12.
 - `build` sandboxes by giving each action a directory and a scrubbed
   environment. It does not use namespaces, so an action that reads absolute
   paths can escape its declared inputs.
