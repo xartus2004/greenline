@@ -690,8 +690,6 @@ func (e *Engine) resetGroup(g *group) {
 	e.setTesting(g, false)
 }
 
-}
-
 // staleLane invalidates every run of l after main moved for reasons outside
 // l. Finished results are dropped (the group is re-tested); running ones are
 // left to finish so their work reaches the cache, then re-tested.
