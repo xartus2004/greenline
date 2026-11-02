@@ -1,0 +1,13 @@
+targets:
+  - name: worker
+    srcs: [jobs.txt]
+    deps: [//lib/mathx:mathx]
+    cmd: |
+      sleep 0.3; { echo "jobs=$(wc -l < services/worker/jobs.txt)"; echo "budget=$(cat lib/mathx/sum.out)"; sort services/worker/jobs.txt; } > $OUT
+    outs: [worker.bin]
+  - name: worker_test
+    srcs: [worker_test.sh]
+    deps: [":worker"]
+    cmd: |
+      sh services/worker/worker_test.sh
+    test: true

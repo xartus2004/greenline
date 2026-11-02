@@ -1,0 +1,6 @@
+targets:
+  - name: docs
+    srcs: ["*.md"]
+    cmd: |
+      sleep 0.1; wc -w $SRCS | awk '{print $1}' > $OUT
+    outs: [wordcount.out]

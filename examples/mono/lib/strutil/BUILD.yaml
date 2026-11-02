@@ -1,0 +1,13 @@
+targets:
+  - name: strutil
+    srcs: [words.txt]
+    # "compile": uppercase the word list (sleep stands in for compile cost)
+    cmd: |
+      sleep 0.2; tr a-z A-Z < $SRCS > $OUT
+    outs: [strutil.out]
+  - name: strutil_test
+    srcs: [strutil_test.sh]
+    deps: [":strutil"]
+    cmd: |
+      sh lib/strutil/strutil_test.sh
+    test: true

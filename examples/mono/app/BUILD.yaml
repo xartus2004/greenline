@@ -1,0 +1,13 @@
+targets:
+  - name: app
+    srcs: [VERSION]
+    deps: [//services/api:api, //services/worker:worker, //tools/gen:gen]
+    cmd: |
+      sleep 0.3; cat app/VERSION services/api/api.bin services/worker/worker.bin tools/gen/schema.gen > $OUT
+    outs: [app.bundle]
+  - name: app_test
+    srcs: [app_test.sh]
+    deps: [":app"]
+    cmd: |
+      sh app/app_test.sh
+    test: true

@@ -1,0 +1,13 @@
+targets:
+  - name: api
+    srcs: [routes.txt]
+    deps: [//lib/textfmt:textfmt, //lib/mathx:mathx]
+    cmd: |
+      sleep 0.3; { cat lib/textfmt/banner.out; echo "routes=$(wc -l < services/api/routes.txt)"; echo "weight=$(cat lib/mathx/sum.out)"; cat services/api/routes.txt; } > $OUT
+    outs: [api.bin]
+  - name: api_test
+    srcs: [api_test.sh]
+    deps: [":api"]
+    cmd: |
+      sh services/api/api_test.sh
+    test: true

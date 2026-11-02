@@ -1,0 +1,12 @@
+targets:
+  - name: mathx
+    srcs: [nums.txt]
+    cmd: |
+      sleep 0.2; awk '{s+=$1} END {print s}' $SRCS > $OUT
+    outs: [sum.out]
+  - name: mathx_test
+    srcs: [mathx_test.sh]
+    deps: [":mathx"]
+    cmd: |
+      sh lib/mathx/mathx_test.sh
+    test: true

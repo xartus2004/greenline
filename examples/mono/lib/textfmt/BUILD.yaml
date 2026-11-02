@@ -1,0 +1,13 @@
+targets:
+  - name: textfmt
+    srcs: [template.txt]
+    deps: [//lib/strutil:strutil]
+    cmd: |
+      sleep 0.2; { cat lib/textfmt/template.txt; sed 's/^/* /' lib/strutil/strutil.out; } > $OUT
+    outs: [banner.out]
+  - name: textfmt_test
+    srcs: [textfmt_test.sh]
+    deps: [":textfmt"]
+    cmd: |
+      sh lib/textfmt/textfmt_test.sh
+    test: true

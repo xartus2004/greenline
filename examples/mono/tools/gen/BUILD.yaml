@@ -1,0 +1,12 @@
+targets:
+  - name: gen
+    srcs: [schema.txt]
+    cmd: |
+      sleep 0.2; awk -F: '{print "field " $1 " " $2}' $SRCS > $OUT
+    outs: [schema.gen]
+  - name: gen_test
+    srcs: [gen_test.sh]
+    deps: [":gen"]
+    cmd: |
+      sh tools/gen/gen_test.sh
+    test: true

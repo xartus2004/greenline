@@ -1,0 +1,6 @@
+/greenline
+/bin/
+*.test
+*.out.prof
+greenline-out/
+.greenline-cache/
