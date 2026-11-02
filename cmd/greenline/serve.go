@@ -15,6 +15,7 @@ import (
 	"github.com/xartus2004/greenline/forge/localgit"
 	"github.com/xartus2004/greenline/queue"
 	"github.com/xartus2004/greenline/server"
+	"google.golang.org/grpc"
 )
 
 func init() { register("serve", cmdServe) }
@@ -43,6 +44,7 @@ func cmdServe(args []string) error {
 	repo := fs.String("repo", "", "bare git repository acting as the forge (required)")
 	initFrom := fs.String("init-from", "", "create -repo from this directory if it does not exist")
 	jobs := fs.Int("j", 4, "parallel build actions per run")
+	grpcAddr := fs.String("grpc", "", "also serve the cache over REAPI v2 gRPC on this address")
 	verbose := fs.Bool("v", false, "debug logging")
 	strategy := strategyFlag(fs, "lanes+speculative")
 	fs.Parse(args)
@@ -74,6 +76,17 @@ func cmdServe(args []string) error {
 	}
 	// Tell scripts (and the crash test) where we listen.
 	os.WriteFile(filepath.Join(*state, "addr"), []byte(ln.Addr().String()), 0o644)
+	if *grpcAddr != "" {
+		gl, err := net.Listen("tcp", *grpcAddr)
+		if err != nil {
+			return err
+		}
+		gs := grpc.NewServer(grpc.MaxRecvMsgSize(16 << 20))
+		srv.RegisterREAPI(gs)
+		go gs.Serve(gl)
+		defer gs.Stop()
+		log.Info("REAPI gRPC cache", "addr", gl.Addr().String())
+	}
 	hs := &http.Server{Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	go hs.Serve(ln)
 	log.Info("serving", "addr", ln.Addr().String(), "repo", *repo, "state", *state)

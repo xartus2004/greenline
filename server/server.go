@@ -31,8 +31,10 @@ import (
 	"github.com/xartus2004/greenline/httpcache"
 	"github.com/xartus2004/greenline/metrics"
 	"github.com/xartus2004/greenline/queue"
+	"github.com/xartus2004/greenline/reapi"
 	"github.com/xartus2004/greenline/runner"
 	"github.com/xartus2004/greenline/store"
+	"google.golang.org/grpc"
 )
 
 // Config configures a server.
@@ -221,6 +223,11 @@ func (s *Server) snapshot() {
 
 // Status returns the latest snapshot.
 func (s *Server) Status() *Status { return s.status.Load() }
+
+// RegisterREAPI serves the queue's cache over the REAPI gRPC services.
+func (s *Server) RegisterREAPI(gs *grpc.Server) {
+	(&reapi.Server{CAS: s.cas, AC: s.ac}).Register(gs)
+}
 
 // ActionCounts returns build actions executed and served from cache.
 func (s *Server) ActionCounts() (executed, cached int64) {

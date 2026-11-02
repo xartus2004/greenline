@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -16,6 +17,8 @@ import (
 	"github.com/xartus2004/greenline/build"
 	"github.com/xartus2004/greenline/cas"
 	"github.com/xartus2004/greenline/httpcache"
+	"github.com/xartus2004/greenline/reapi"
+	"google.golang.org/grpc"
 )
 
 func init() {
@@ -115,6 +118,7 @@ func cmdCache(args []string) error {
 	fs := flag.NewFlagSet("cache", flag.ExitOnError)
 	addr := fs.String("addr", ":9092", "listen address")
 	dir := fs.String("dir", defaultCacheDir(), "cache directory")
+	grpcAddr := fs.String("grpc", "", "also serve the REAPI v2 cache over gRPC on this address (e.g. :9093)")
 	maxBytes := fs.Int64("max-bytes", 10<<30, "CAS capacity in bytes")
 	fs.Parse(args)
 	st, raw, err := openCache("", *dir, *maxBytes)
@@ -122,6 +126,16 @@ func cmdCache(args []string) error {
 		return err
 	}
 	log := logger(false)
-	log.Info("cache listening", "addr", *addr, "dir", *dir)
+	if *grpcAddr != "" {
+		ln, err := net.Listen("tcp", *grpcAddr)
+		if err != nil {
+			return err
+		}
+		gs := grpc.NewServer(grpc.MaxRecvMsgSize(16 << 20))
+		(&reapi.Server{CAS: st, AC: raw}).Register(gs)
+		log.Info("REAPI gRPC cache listening", "addr", ln.Addr().String())
+		go gs.Serve(ln)
+	}
+	log.Info("HTTP cache listening", "addr", *addr, "dir", *dir)
 	return http.ListenAndServe(*addr, &httpcache.Server{CAS: st, AC: raw, Log: log})
 }

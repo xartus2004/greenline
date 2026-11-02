@@ -1,0 +1,13 @@
+genrule(
+    name = "hello",
+    srcs = ["in.txt"],
+    outs = ["hello.txt"],
+    cmd = "tr a-z A-Z < $< > $@",
+)
+
+genrule(
+    name = "twice",
+    srcs = [":hello"],
+    outs = ["twice.txt"],
+    cmd = "cat $< $< > $@",
+)

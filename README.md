@@ -16,9 +16,13 @@ The cache speaks Bazel's HTTP remote-cache protocol (`/ac/<sha256>`,
 `/cas/<sha256>`). greenline also ships a small hermetic build tool
 (`BUILD.yaml`), so the whole thing works without Bazel.
 
-> **Status:** M1–M4 are done: cache, build tool, queue engine, crash recovery,
-> simulator, real-git end-to-end demo and the kill -9 test. M5 (REAPI gRPC,
-> GitHub adapter, Dockerfile) is not done yet. See [PROGRESS.md](PROGRESS.md).
+> **Status:** M1–M4 are done and tested. That covers the cache, build tool,
+> queue engine, crash recovery, simulator, the real-git end-to-end demo and the
+> kill -9 test. M5 is partly verified. The REAPI gRPC cache and the GitHub
+> adapter are built and tested, against a Go gRPC client and against `httptest`
+> fakes. The real-Bazel test and the Docker image are written but **were not
+> run**, because this environment can't download Bazel or pull base images. See
+> [PROGRESS.md](PROGRESS.md) and [docs/architecture.md](docs/architecture.md).
 
 ## The invariant
 
@@ -88,6 +92,8 @@ terminal state and that `main`'s contents match the PR states.
 | `server` | One goroutine owns the engine and serialises API calls, CI results, timers and `main` polling. Also serves a JSON API, an HTML status page, Prometheus `/metrics`, and the HTTP cache under `/cache/`. |
 | `metrics` | Prometheus collector: queue depth, lanes, runs started and cancelled, merges, ejections by reason, flakes, CAS hits, misses, bytes, evictions and corrupt blobs, build actions executed vs cached, and a time-to-merge histogram. |
 | `demo` | The 20-PR scenario and the kill -9 integration test. |
+| `reapi` | REAPI v2 gRPC cache: Capabilities, ContentAddressableStorage (FindMissingBlobs, BatchUpdateBlobs, BatchReadBlobs), ActionCache, and ByteStream Read, Write and QueryWriteStatus. It shares one action-cache store with `httpcache`, because both hold serialized `ActionResult` protos. A `GetActionResult` whose outputs were evicted returns NotFound. Remote execution is not implemented. |
+| `forge/github` | REST `Forge`: `Advance` checks for a single parent, then does a fast-forward-only ref update, which acts as a CAS. Also check runs, and a webhook handler with constant-time `X-Hub-Signature-256` verification (fuzzed) for label-driven enqueue, synchronize, unlabel, close and push-to-main. Tested against an `httptest` fake. The token comes only from `GITHUB_TOKEN` and never appears in errors. |
 
 ### Strategies (one mechanism)
 
@@ -306,8 +312,10 @@ go run ./cmd/greenline sim -cache both   # full results grid (docs/results.md)
 go test ./cas -run x -bench .            # CAS benchmarks
 go run ./cmd/greenline demo              # 20-PR end-to-end demo + from-scratch verification
 go test -tags integration ./demo -v      # kill -9 crash-recovery test (~40 s)
-go run ./cmd/greenline serve -repo /tmp/r.git -init-from examples/mono -addr :8080
+go run ./cmd/greenline serve -repo /tmp/r.git -init-from examples/mono -addr :8080 -grpc :9093
 #   POST /api/prs {"id":1,"branch":"pr/1"} · GET / (status page) · GET /metrics · /cache/
+#   bazel build --remote_cache=http://localhost:8080/cache   (or grpc://localhost:9093)
+go test -tags bazel ./reapi -v            # needs bazel on PATH (not run here)
 ```
 
 ## Limitations
@@ -319,11 +327,18 @@ go run ./cmd/greenline serve -repo /tmp/r.git -init-from examples/mono -addr :80
 - In the cache model, a cache entry becomes visible only when the action that
   produced it finishes. Two runs that start at the same time both miss, as they
   would without remote execution's in-flight deduplication.
-- The cache stores Bazel's `ActionResult` protobufs opaquely and does not
-  validate them. **Compatibility with a real Bazel client is untested**: Bazel
-  could not be downloaded in the development environment (the network policy
-  blocks releases.bazel.build and GitHub release assets). The REAPI gRPC server
-  is not built yet (M5).
+- **Compatibility with a real Bazel client is untested.** Bazel could not be
+  downloaded in the development environment (the network policy blocks
+  releases.bazel.build and GitHub release assets). `reapi/bazel_test.go`
+  (`-tags bazel`) builds a two-genrule workspace twice against each front end
+  and asserts that the second build is fully remote-cached. It has not been
+  run. The HTTP front end stores AC values opaquely. The gRPC front end decodes
+  `ActionResult` to check that outputs are present. Instance names are ignored,
+  and compressed blobs are rejected.
+- The Dockerfile has not been built: Docker Hub returned 429 to this container.
+- The GitHub adapter has only been exercised against a fake. Wiring it into
+  `serve` (a local mirror that builds candidate commits and pushes them before
+  `Advance`) is not done.
 - Quarantine treats failures of quarantined tests as passes. If a real break
   shows up only in a quarantined test, it would get through. This trade-off is
   standard, and quarantined failures are counted (`quarantined_ignored`).

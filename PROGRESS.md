@@ -19,7 +19,7 @@ Resume with: "read PROGRESS.md and continue".
 - [x] **M2** — queue engine (one mechanism covers serial, batch+bisect, Zuul-style speculation with culprit skipping, lanes), write-ahead event log (`queue.MemStore`, `store.SQLite`), crash recovery that reconciles in-doubt merges with the forge, flaky retry + quarantine, infra retry with backoff, timeouts, update/remove/external push. Table-driven lifecycle tests in `queue/engine_test.go`; property test in `sim/sim_test.go` (7 configs × 1,000 seeds, `-long` = 20,000) with random crash points.
 - [x] **M3** — speculation + lanes (built in M2's engine), `greenline sim` grid with a no-queue baseline and cache on/off, README results table, docs/results.md (full grid). `go test ./sim -long` (7×20,000 seeds) passes in 46 s.
 - [x] **M4** — `forge/localgit` (deterministic merge commits via merge-tree/commit-tree, CAS `update-ref`), `runner` (real CI through the cache, process-group cancel, `VerifyMain`), `server` (engine goroutine, JSON API, HTML status page, Prometheus, HTTP cache), `greenline serve` and `greenline demo` (20 PRs; main verified green from scratch), kill -9 integration test (`-tags integration`, passes with 9–11 SIGKILLs per run).
-- [ ] **M5** — REAPI gRPC, GitHub forge (fakes), status page, Dockerfile, docs.
+- [~] **M5** — done: `reapi` gRPC cache (tested with a Go client over bufconn), `forge/github` (REST forge, check runs, HMAC webhooks; tested against httptest fakes; signature check fuzzed), HTML status page (`GET /`), Prometheus `/metrics`, `docs/architecture.md`, `greenline cache -grpc` / `serve -grpc`. **Written but not run here:** `reapi/bazel_test.go` (`-tags bazel`, needs Bazel; downloads blocked) and the Dockerfile (Docker Hub returned 429; no local base images).
 
 ## Measured so far (this container, 4 vCPU)
 
@@ -35,12 +35,16 @@ Resume with: "read PROGRESS.md and continue".
 
 p = 0.10, 12 PRs/h, cache on: serial p95 TTM 8.7h → speculative 36m, lanes+speculative 32m (≈16× lower); 0 main breakages for every queue strategy vs 2 for no queue. Speculative CI/merged PR: 9.8 min with cache vs 22.5 without (serial 6.7). Cache hit ratio of target actions under speculation: 47%.
 
-## Next (M5)
+## Next
 
-1. `reapi/`: gRPC Capabilities, ContentAddressableStorage (FindMissingBlobs, BatchUpdate/BatchRead), ActionCache, ByteStream over the same `cas`/`actioncache` stores, using `github.com/bazelbuild/remote-apis` protos (available through the Go proxy). Test with a Go gRPC client; real Bazel test behind `//go:build bazel` (Bazel not downloadable here).
-2. `forge/github`: webhook handler (HMAC `X-Hub-Signature-256`), Checks API + merge via a fake server in tests; token only from `GITHUB_TOKEN`.
-3. Dockerfile, architecture doc.
+1. Run `go test -tags bazel ./reapi -v` somewhere Bazel is installed, then fix whatever it finds. The likely suspects are digest-function handling and ByteStream resource names with compressors.
+2. `docker build .` on a machine that can pull `golang:1.24-bookworm` and `debian:bookworm-slim`.
+3. Wire `forge/github` into `serve`: keep a local mirror (localgit) for building candidate commits, push them to `refs/heads/greenline/<sha>`, then `Advance` via the API, and report check runs from `OnTransition`.
+4. Event-log compaction (a snapshot plus truncation).
+5. Real runner: build only the affected targets of the *last* group (relative to its parent) rather than of the whole chain.
 
 ## Known gaps
 
-- Bazel compatibility is implemented against the documented HTTP protocol but **not verified with a real Bazel** here (no Bazel binary available).
+- Bazel compatibility (HTTP and gRPC) is implemented against the documented protocols but **not verified with a real Bazel** here (no Bazel binary available; npm/bazelisk route also not permitted).
+- Dockerfile unverified (Docker Hub rate limit).
+- See README "Limitations".
