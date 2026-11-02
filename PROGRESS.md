@@ -17,7 +17,7 @@ Resume with: "read PROGRESS.md and continue".
 
 - [x] **M1** — cas (disk LRU, atomic writes, integrity check, fuzzed digest parsing), actioncache, httpcache (Bazel HTTP protocol server + client), build tool (BUILD.yaml, sandboxed actions, process-group kill, timeouts), affected-target analysis, `examples/mono` (15 targets), `greenline build` / `greenline cache`.
 - [x] **M2** — queue engine (one mechanism covers serial, batch+bisect, Zuul-style speculation with culprit skipping, lanes), write-ahead event log (`queue.MemStore`, `store.SQLite`), crash recovery that reconciles in-doubt merges with the forge, flaky retry + quarantine, infra retry with backoff, timeouts, update/remove/external push. Table-driven lifecycle tests in `queue/engine_test.go`; property test in `sim/sim_test.go` (7 configs × 1,000 seeds, `-long` = 20,000) with random crash points.
-- [ ] **M3** — speculation, lanes, simulator, README results table.
+- [x] **M3** — speculation + lanes (built in M2's engine), `greenline sim` grid with a no-queue baseline and cache on/off, README results table, docs/results.md (full grid). `go test ./sim -long` (7×20,000 seeds) passes in 46 s.
 - [ ] **M4** — localgit forge, runner, `greenline demo`, kill -9 integration test.
 - [ ] **M5** — REAPI gRPC, GitHub forge (fakes), status page, Dockerfile, docs.
 
@@ -30,6 +30,17 @@ Resume with: "read PROGRESS.md and continue".
 - Safety rests on two checks only: a group merges only if its run's parent commit equals the current main, and `Forge.Advance` is a CAS fast-forward by exactly one commit. The run-invalidation rules are for efficiency: a mutation test that removed one of them still produced zero violations (the parent check caught the stale passes). A mutation making flaky retries always pass was caught on the first seed.
 - Lanes are re-formed after each merge/ejection from the PRs that are not yet committed to a run. Without this, a lane's target set is the union of its whole backlog and under load everything collapses into one lane (measured: avg 1.2 lanes, 45 active PRs → after the fix 3.1 lanes, 8.7 active).
 - Runs in other lanes are not cancelled when main moves; they finish (filling the cache) and the group is re-verified on the new main, which is mostly cache hits.
+
+## Headline numbers (simulated; `go run ./cmd/greenline sim -p 0.10 -rate 12`)
+
+p = 0.10, 12 PRs/h, cache on: serial p95 TTM 8.7h → speculative 36m, lanes+speculative 32m (≈16× lower); 0 main breakages for every queue strategy vs 2 for no queue. Speculative CI/merged PR: 9.8 min with cache vs 22.5 without (serial 6.7). Cache hit ratio of target actions under speculation: 47%.
+
+## Next (M4)
+
+1. `forge/localgit`: bare repo + `git` CLI; deterministic commits (fixed author/committer dates) so `apply(parent, group)` is reproducible; `Advance` = `git update-ref refs/heads/main new old` after checking `new^ == old`.
+2. `runner`: worktree per run, apply groups with `git merge --no-ff` (fixed dates), `affected` vs base, `build` the affected targets, cancel = kill process group.
+3. `cmd/greenline serve` + `demo` (20 PR branches: broken, pairwise-conflicting, flaky).
+4. Integration test (`//go:build integration`): run `serve` as a subprocess, `kill -9` at random points, restart, check every main commit with a from-scratch rebuild.
 
 ## Known gaps
 

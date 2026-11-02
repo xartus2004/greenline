@@ -69,7 +69,8 @@ type Result struct {
 	Runs          int
 	CacheHitRatio float64
 	Crashes       int
-	Violations    []string // invariant violations (must be empty)
+	TTM           []time.Duration `json:"-"` // per merged PR, sorted
+	Violations    []string        // invariant violations (must be empty)
 	MainBreakages int
 	Stats         queue.Stats
 }
@@ -571,6 +572,7 @@ func (s *simulator) result() *Result {
 	}
 	r.Violations = s.w.Violations
 	sort.Slice(ttm, func(i, j int) bool { return ttm[i] < ttm[j] })
+	r.TTM = ttm
 	if n := len(ttm); n > 0 {
 		r.P50 = ttm[n/2]
 		r.P95 = ttm[min(n-1, int(math.Ceil(float64(n)*0.95))-1)]
